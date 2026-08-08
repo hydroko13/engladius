@@ -15,7 +15,7 @@ local camera = { x = 0, y = 0 }
 local WIDTH, HEIGHT = 640, 360
 local tick = 0
 local tick_timer = 0
-local tick_rate = 30
+local tick_rate = 20
 local server_players = {}
 local player_default_speed = 140
 

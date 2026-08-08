@@ -22,8 +22,9 @@ local bit = require("bit")
 local server
 local players = {}
 local player_addr_to_id = {}
-local tick_rate = 60
+local tick_rate = 20
 local tick_timer = 0
+local server_tick = 1
 local position_sequence = 0
 local tick_delta = 1 / tick_rate
 local server_fps_cap = 120
@@ -77,11 +78,11 @@ function love.update(delta)
                 x = 0,
                 y = 0,
                 peer = event.peer,
-                input_state = { down = false, up = false, right = false, left = false, seq = 0 },
                 input_frames_to_process = {},
                 frozen_timer = 0,
-                expected_seq = 1,
-                last_processed_seq = 0
+                last_seq = nil,
+                scheduled_inputs = {},
+                first_input_tick = nil
             }
             player_addr_to_id[tostring(event.peer)] = id_str
         end
@@ -112,23 +113,43 @@ function love.update(delta)
             if event.data:sub(1, 1) == "p" then
                 local player = players[id_str]
                 if player then
-                    local _, base_seq, count = love.data.unpack("<i1I4I1", event.data)
-                    for i = 0, count - 1 do
-                        local seq_num = base_seq + i
-
-                        if seq_num > player.last_processed_seq then
-                            local input_byte = event.data:byte(7 + i)
-                            player.input_frames_to_process[seq_num] = {
+                    local _, input_seq, input_byte = love.data.unpack("<i1I4I1", event.data)
+                    if player.last_seq == nil then
+                        player.scheduled_inputs[tostring(server_tick)] = {
+                            down = bit.band(input_byte, 1) ~= 0,
+                            up = bit.band(input_byte, 2) ~= 0,
+                            right = bit.band(input_byte, 4) ~= 0,
+                            left = bit.band(input_byte, 8) ~= 0,
+                            seq = input_seq,
+                        }
+                        player.first_input_tick = {server = server_tick, client = input_seq}
+                        
+                        player.last_seq = input_seq
+                    else
+                        if input_seq > player.last_seq then
+                            for i = player.last_seq + 1, input_seq - 1 do
+                                player.scheduled_inputs[tostring(player.first_input_tick.server + (i - player.first_input_tick.client))] = {
+                                    down = false,
+                                    up = false,
+                                    right = false,
+                                    left = false,
+                                    seq = i
+                                }
+                            end
+                            player.scheduled_inputs[tostring(player.first_input_tick.server + (input_seq - player.first_input_tick.client))] = {
                                 down = bit.band(input_byte, 1) ~= 0,
                                 up = bit.band(input_byte, 2) ~= 0,
                                 right = bit.band(input_byte, 4) ~= 0,
                                 left = bit.band(input_byte, 8) ~= 0,
+                                seq = input_seq
                             }
-                            print(seq_num)
+                            player.last_seq = input_seq
                         end
                     end
-                
                     
+                    
+            
+                
                 end
             end
         end
@@ -151,36 +172,33 @@ function love.update(delta)
 
             local seq_nums = {}
 
-            for seq_num, input_state in pairs(player.input_frames_to_process) do
-                seq_nums[#seq_nums + 1] = seq_num
-            end
+            local this_tick_input = player.scheduled_inputs[tostring(server_tick)]
+            player.scheduled_inputs[tostring(server_tick)] = nil
 
-            table.sort(seq_nums)
-            
-
-            for _, seq_num in ipairs(seq_nums) do
-                local input_state = player.input_frames_to_process[seq_num]
-                if input_state.down then
+            if this_tick_input then
+                
+                if this_tick_input.down then
                     player.y = player.y + tick_delta * player_default_speed
                     player.frozen_timer = 0
                 end
-                if input_state.up then
+                if this_tick_input.up then
                     player.y = player.y - tick_delta * player_default_speed
                     player.frozen_timer = 0
                 end
-                if input_state.right then
+                if this_tick_input.right then
                     player.x = player.x + tick_delta * player_default_speed
                     player.frozen_timer = 0
                 end
-                if input_state.left then
+                if this_tick_input.left then
                     player.x = player.x - tick_delta * player_default_speed
                     player.frozen_timer = 0
                 end
             end
 
-            if #seq_nums > 0 then
-                player.last_processed_seq = seq_nums[#seq_nums]
-            end
+            
+
+           
+        
 
             
 
@@ -224,9 +242,10 @@ function love.update(delta)
             
             -- Send final positions
             
-            for _, seq_num in ipairs(seq_nums) do
-                player.peer:send("I" .. love.data.pack("string", "<I4ff", seq_num, player.x, player.y), 0, "unreliable")
+            if this_tick_input then
+                player.peer:send("I" .. love.data.pack("string", "<I4ff", this_tick_input.seq, player.x, player.y), 0, "unreliable")
             end
+            
 
             server:flush()
             player.input_frames_to_process = {}
@@ -251,6 +270,9 @@ function love.update(delta)
             end
         end
         position_sequence = position_sequence + 1
+
+
+        server_tick = server_tick + 1
         
     end
 
